@@ -8,8 +8,8 @@ Central Limit Theorem (CLT) through simulation.
 
 import pandas as pd
 import numpy as np
+from scipy import stats
 import sys
-from scipy.stats import skew, kurtosis, kstest, norm, poisson
 
 # ============================================
 # DATA LOADING & PREPROCESSING
@@ -21,102 +21,148 @@ try:
     df = pd.read_csv(DATA_PATH)
 except FileNotFoundError:
     print(f"\n[ERROR] Missing Dataset: Could not find '{DATA_PATH}'.")
+    print("Please ensure the CSV file is located in the 'data/' subdirectory relative to this script.")
     sys.exit(1)
 
-# ============================================
-# PART 1: DISTRIBUTION SHAPE ANALYSIS
-# ============================================
-
-def get_moments(data: pd.Series) -> dict:
-    """Computes mean, median, skewness, and kurtosis for a given series."""
-    return {
-        'mean': data.mean(),
-        'median': data.median(),
-        'skewness': skew(data, bias=False),
-        'kurtosis': kurtosis(data, bias=False)  # Fisher's definition (normal=0.0)
-    }
-
-session_stats = get_moments(df['session_minutes'])
-score_stats = get_moments(df['score_views'])
+session_minutes = df['session_minutes'].values
+score_views = df['score_views'].values
 
 # ============================================
-# PART 2: DISTRIBUTION FITTING & GOODNESS-OF-FIT
+# PART 1: MOMENTS & SHAPE ANALYSIS
 # ============================================
 
-# 1. Fit Normal Distribution to session_minutes
-mu_session, std_session = norm.fit(df['session_minutes'])
-ks_stat_norm, p_val_norm = kstest(df['session_minutes'], 'norm', args=(mu_session, std_session))
+# Calculate mean
+mean_minutes = np.mean(session_minutes)
 
-# 2. Fit Poisson Distribution to score_views
-mu_score = df['score_views'].mean()
-# For Poisson (discrete), we compare against the PMF/CDF
-ks_stat_pois, p_val_pois = kstest(df['score_views'], 'poisson', args=(mu_score,))
+# Calculate variance (use ddof=1 for sample variance)
+variance_minutes = np.var(session_minutes, ddof=1)
 
-# ============================================
-# PART 3: CENTRAL LIMIT THEOREM (CLT) SIMULATION
-# ============================================
+# Calculate skewness (use bias=False for unbiased estimator)
+skewness_minutes = stats.skew(session_minutes, bias=False)
 
-def clt_simulation(data: pd.Series, sample_size: int = 30, n_samples: int = 1000):
-    """Simulates the sampling distribution of the mean."""
-    np.random.seed(42)
-    sample_means = [data.sample(sample_size, replace=True).mean() for _ in range(n_samples)]
-    return np.array(sample_means)
-
-clt_means = clt_simulation(df['session_minutes'], sample_size=64)
-pop_mean = df['session_minutes'].mean()
-sampling_mean = clt_means.mean()
-sampling_skew = skew(clt_means, bias=False)
+# Calculate excess kurtosis (use bias=False; scipy returns excess by default)
+kurtosis_minutes = stats.kurtosis(session_minutes, bias=False)
 
 # ============================================
-# BUSINESS INSIGHTS & OUTPUT
+# PART 2: STANDARD DISTRIBUTIONS
 # ============================================
 
-print("\n" + "="*80)
-print(" STATISTICS MILESTONE 2: DISTRIBUTION ANALYSIS REPORT ".center(80, "="))
-print("="*80)
+# Fit Poisson distribution to score_views
+# Lambda MLE for Poisson is simply the sample mean
+lambda_poisson = np.mean(score_views)
 
-print("\nPART 1: HIGHER-ORDER MOMENTS & SHAPE ANALYSIS")
-print("-" * 50)
-print(f"{'Metric':<15} {'Session Minutes':<20} {'Score Views':<20}")
-print("-" * 50)
-for metric in ['mean', 'median', 'skewness', 'kurtosis']:
-    print(f"{metric.capitalize():<15} {session_stats[metric]:<20.2f} {score_stats[metric]:<20.2f}")
+# Fit Normal distribution to session_minutes
+mu_normal, sigma_normal = stats.norm.fit(session_minutes)
 
-print("\nInterpretation:")
-print(f" - session_minutes Skewness ({session_stats['skewness']:.2f}): ", end="")
-if session_stats['skewness'] > 1:
-    print("Highly right-skewed; power users are significantly outperforming the median.")
-else:
-    print("Moderately skewed; session times are relatively clustered.")
+# Perform KS test for Poisson fit
+# stats.kstest requires a CDF function or a frozen distribution
+ks_stat_poisson, p_value_poisson = stats.kstest(score_views, 'poisson', args=(lambda_poisson,))
 
-print(f" - score_views Kurtosis ({score_stats['kurtosis']:.2f}): ", end="")
-if score_stats['kurtosis'] > 0:
-    print("Leptokurtic (Heavy tails); extreme engagement outliers are present.")
-else:
-    print("Platykurtic; distribution is flatter with fewer extreme views.")
+# Perform KS test for Normal fit
+ks_stat_normal, p_value_normal = stats.kstest(session_minutes, 'norm', args=(mu_normal, sigma_normal))
 
-print("\nPART 2: DISTRIBUTION FITTING (GOODNESS-OF-FIT)")
-print("-" * 50)
-print(f"Normal Fit (session_minutes): K-S Stat = {ks_stat_norm:.4f}, p-value = {p_val_norm:.4e}")
-print(f"Poisson Fit (score_views):   K-S Stat = {ks_stat_pois:.4f}, p-value = {p_val_pois:.4e}")
+# ============================================
+# PART 3: SAMPLING DISTRIBUTIONS & CLT
+# ============================================
 
-print("\nInsight:")
-print(" - A low p-value (< 0.05) indicates the data deviates significantly from the theoretical model.")
-print(" - If Normal fit fails, session times likely follow a Log-Normal or Exponential growth pattern.")
+pop_mean = session_minutes.mean()
+pop_std = session_minutes.std(ddof=1)
+sample_sizes = [10, 30, 100]
+n_reps = 10000
+np.random.seed(42)
 
-print("\nPART 3: CENTRAL LIMIT THEOREM VERIFICATION")
-print("-" * 50)
-print(f"Population Mean:           {pop_mean:.4f}")
-print(f"Sampling Dist. Mean:       {sampling_mean:.4f}")
-print(f"Sampling Dist. Skewness:   {sampling_skew:.4f} (Goal: ≈ 0)")
+# Simulate sampling distributions
+sampling_distributions = {}
+for n in sample_sizes:
+    # draw n_reps samples of size n, compute means
+    sample_means = np.array([np.random.choice(session_minutes, size=n, replace=True).mean() for _ in range(n_reps)])
+    sampling_distributions[n] = sample_means
 
-print("\nConclusion:")
-print(f" - The sampling distribution mean ({sampling_mean:.4f}) accurately estimates the population mean ({pop_mean:.4f}).")
-print(f" - Even if the population is skewed, the sampling distribution is approximately Normal (Skewness ≈ {sampling_skew:.2f}),")
-print("   enabling the use of parametric tests for engagement experiments.")
-print("="*80 + "\n")
+# Calculate empirical SE for each n
+empirical_ses = {}
+for n, means in sampling_distributions.items():
+    empirical_ses[n] = np.std(means, ddof=1)
 
-# Assertions for autograder verification
-assert len(clt_means) == 1000, "CLT simulation must have 1000 samples"
-assert abs(sampling_mean - pop_mean) < 0.1, "CLT mean should converge to population mean"
-assert abs(sampling_skew) < 0.5, "Sampling distribution should be approximately symmetric (Normal)"
+# Calculate theoretical SE (sigma/sqrt(n))
+theoretical_ses = {n: pop_std / np.sqrt(n) for n in sample_sizes}
+
+# Determine minimum n for approximate Normality (|skew| < 0.5)
+min_n_normal = None
+for n in sample_sizes:
+    s = stats.skew(sampling_distributions[n], bias=False)
+    if abs(s) < 0.5:
+        min_n_normal = n
+        break
+
+# ============================================
+# VALIDATION CHECKS
+# ============================================
+
+assert mean_minutes > 0, "Mean must be positive"
+assert variance_minutes > 0, "Variance must be positive"
+assert lambda_poisson > 0, "Poisson lambda must be positive"
+assert sigma_normal > 0, "Normal sigma must be positive"
+
+for n in sample_sizes:
+    error = abs(empirical_ses[n] - theoretical_ses[n]) / theoretical_ses[n]
+    assert error < 0.1, f"SE mismatch for n={n}: empirical={empirical_ses[n]:.2f}, theoretical={theoretical_ses[n]:.2f}"
+
+# ============================================
+# RESULTS & INTERPRETATION
+# ============================================
+
+print("\n" + "="*60)
+print(" SESSION DURATION MOMENTS ".center(60, "="))
+print("="*60)
+print(f"Mean:     {mean_minutes:.2f} minutes")
+print(f"Variance: {variance_minutes:.2f} (SD = {variance_minutes**0.5:.2f})")
+print(f"Skewness: {skewness_minutes:.2f}")
+print(f"Kurtosis: {kurtosis_minutes:.2f} (excess)")
+
+print("\nSHAPE INTERPRETATION:")
+skew_desc = "highly right-skewed" if skewness_minutes > 1 else "moderately right-skewed" if skewness_minutes > 0.5 else "relatively symmetric"
+print(f"  Skewness ({skewness_minutes:.2f}): Data is {skew_desc}. Most users have short sessions, ")
+print("  while a few 'power users' stay active for exceptionally long durations.")
+
+kurt_desc = "heavy-tailed (leptokurtic)" if kurtosis_minutes > 1 else "light-tailed" if kurtosis_minutes < -1 else "near-normal"
+print(f"  Kurtosis ({kurtosis_minutes:.2f}): The distribution is {kurt_desc}, suggesting that ")
+print("  extreme session lengths (outliers) are more frequent than in a normal distribution.")
+
+print(f"\nBUSINESS IMPLICATION:")
+print("  Product features should be optimized for the median session length to serve the majority, ")
+print("  while specialized engagement tools can be targeted towards the high-value 'power user' tail.")
+
+print("\n" + "="*60)
+print(" DISTRIBUTION FITTING RESULTS ".center(60, "="))
+print("="*60)
+print(f"{'Distribution':<15} {'Parameter(s)':<25} {'KS Stat':<10} {'p-value':<10}")
+print("-" * 60)
+print(f"Poisson         λ = {lambda_poisson:.2f}{'':<15} {ks_stat_poisson:.3f}    {p_value_poisson:.3f}")
+print(f"Normal          μ = {mu_normal:.2f}, σ = {sigma_normal:.2f}   {ks_stat_normal:.3f}    {p_value_normal:.3f}")
+print("="*60)
+
+print("\nGOODNESS-OF-FIT INTERPRETATION:")
+p_pois_desc = "poor" if p_value_poisson < 0.05 else "adequate"
+p_norm_desc = "poor" if p_value_normal < 0.05 else "adequate"
+print(f"  Poisson fit: {p_pois_desc.capitalize()} fit (p={p_value_poisson:.3f}). Score views likely have more variance than mean.")
+print(f"  Normal fit:  {p_norm_desc.capitalize()} fit (p={p_value_normal:.3f}). Session minutes are too skewed for a normal model.")
+
+print(f"\nRECOMMENDATION FOR SIMULATION MODELS:")
+print("  Use a Log-Normal or Gamma distribution for session durations to better capture the right-skew and ")
+print("  zero-bound nature of the timing data in future discrete-event simulations.")
+
+print("\n" + "="*60)
+print(" CLT CONVERGENCE RESULTS ".center(60, "="))
+print("="*60)
+print(f"{'Sample Size (n)':<20} {'Empirical SE':<18} {'Theoretical SE':<18} {'Ratio'}")
+print("-" * 60)
+for n in sample_sizes:
+    ratio = empirical_ses[n] / theoretical_ses[n]
+    print(f"{n:<20} {empirical_ses[n]:<18.2f} {theoretical_ses[n]:<18.2f} {ratio:.3f}")
+print("="*60)
+print(f"\nMinimum n for approximate Normality: {min_n_normal}")
+
+print(f"\nBUSINESS IMPLICATION:")
+print(f"  For reliable A/B test results, a minimum sample size of n={min_n_normal} per variant is recommended. ")
+print("  This ensures the sampling distribution of the mean is normal enough for standard Z-tests or t-tests.")
+print("="*60 + "\n")
